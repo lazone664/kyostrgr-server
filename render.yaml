@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: kyostrgr-optimizer
+    env: docker
+    plan: free
+    region: frankfurt
+    autoDeploy: true
