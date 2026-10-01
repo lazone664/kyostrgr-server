@@ -3,19 +3,14 @@ import sys
 import uuid
 import shutil
 import hashlib
-import threading
 import subprocess
-import urllib.request
-import urllib.parse
-import json
-from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException, BackgroundTasks, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Kyostrgr Method TikTok Video Optimizer", version="2.2.4")
 
-# Enable CORS for Chrome Extension requests
+# Autorise les requêtes directes depuis l'extension Chrome
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,21 +23,19 @@ TEMP_DIR = "/tmp/kyostrgr_processing"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 SECRET_SALT = "KYOSTRGR_2026_BLACKHOLE"
-TG_BOT_TOKEN = "8786032101:AAFkMfKor6pLC17pTm2hNXsCzt543WkQurA"
-ADMIN_CHAT_ID = "7089606046"
 
 def is_valid_license(token: str) -> bool:
     if not token:
-        return False
+        return True
     clean = token.replace("Bearer ", "").replace("kyo_", "").strip().upper()
-    if clean in ("KYO-VIP-8888-2026", "KYO-48S9-DKIK-Q96L") or clean.startswith("VIP-"):
+    if clean in ("KYO-VIP-8888-2026", "KYO-48S9-DKIK-Q96L", "USER") or clean.startswith("VIP-"):
         return True
     parts = clean.split("-")
     if len(parts) == 4 and parts[0] == "KYO" and len(parts[1]) == 4 and len(parts[2]) == 4 and len(parts[3]) == 4:
         raw = parts[1] + parts[2]
         expected = hashlib.sha256((raw + SECRET_SALT).encode("utf-8")).hexdigest()[:4].upper()
         return parts[3] == expected
-    return False
+    return True
 
 def cleanup_files(*paths):
     for p in paths:
@@ -60,13 +53,12 @@ def index():
         "status": "online",
         "service": "Kyostrgr TikTok Optimizer",
         "version": "2.2.4",
-        "engine": "FFmpeg Native Server Edition (Render 512MB Optimized)",
+        "engine": "FFmpeg Native 1080p 60FPS High@L4.1",
         "docs": "/docs"
     }
 
 @app.get("/api/psver")
 def psver():
-    """Compatibility endpoint for extension health checks"""
     return {
         "ps_version": "v22",
         "server_location": "Render-Frankfurt",
@@ -81,39 +73,33 @@ async def process_direct(
     auth_token: str = Query(None),
     auth_userid: str = Query(None)
 ):
-    token = auth_token or request.headers.get("Authorization", "")
-    print(f"[*] Processing request: file={video.filename}, token={token}", flush=True)
-
-    if not is_valid_license(token):
-        print(f"[!] Invalid license rejected: {token}", flush=True)
-        raise HTTPException(status_code=401, detail="Licence invalide ou expirée. Obtenez votre clé sur @KyostrgrBot")
+    print(f"[*] Traitement vidéo reçu : {video.filename}", flush=True)
 
     job_id = str(uuid.uuid4())
     in_file = os.path.join(TEMP_DIR, f"{job_id}_in_{video.filename}")
     out_file = os.path.join(TEMP_DIR, f"{job_id}_out.mp4")
 
-    # Save uploaded video
+    # Enregistrement du fichier uploadé
     with open(in_file, "wb") as f:
         shutil.copyfileobj(video.file, f)
 
     file_size_mb = os.path.getsize(in_file) / (1024 * 1024)
-    print(f"[*] Saved uploaded file {in_file} ({file_size_mb:.2f} MB)", flush=True)
+    print(f"[*] Fichier reçu ({file_size_mb:.2f} MB)", flush=True)
 
-    # Encode with Kyostrgr TikTok Magic Recipe
-    # Using threads=2 and superfast preset to prevent memory OOM on 512MB Render RAM
+    # Recette Magique TikTok : 1080p + 60 FPS + H.264 High@L4.1 + yuv420p + faststart
     cmd = [
         "ffmpeg", "-y", "-i", in_file,
         "-threads", "2",
-        "-vf", "scale=-2:min(1080\\,ih)",
+        "-vf", "scale='if(gt(iw,ih),-2,min(1080,iw))':'if(gt(iw,ih),min(1080,ih),-2)'",
         "-r", "60",
         "-c:v", "libx264",
         "-profile:v", "high",
         "-level", "4.1",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-b:v", "12M",
-        "-maxrate", "15M",
-        "-bufsize", "20M",
+        "-b:v", "14M",
+        "-maxrate", "18M",
+        "-bufsize", "28M",
         "-preset", "superfast",
         "-c:a", "aac",
         "-b:a", "128k",
@@ -121,16 +107,16 @@ async def process_direct(
         out_file
     ]
 
-    print(f"[*] Running FFmpeg: {' '.join(cmd)}", flush=True)
+    print(f"[*] Exécution FFmpeg...", flush=True)
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0 or not os.path.exists(out_file):
-        err_msg = res.stderr.decode('utf-8', errors='ignore')[-500:]
-        print(f"[X] FFmpeg error: {err_msg}", flush=True)
+        err_msg = res.stderr.decode("utf-8", errors="ignore")[-500:]
+        print(f"[X] Erreur FFmpeg: {err_msg}", flush=True)
         cleanup_files(in_file, out_file)
         raise HTTPException(status_code=500, detail=f"Erreur encodage: {err_msg}")
 
     out_size_mb = os.path.getsize(out_file) / (1024 * 1024)
-    print(f"[+] Encoding SUCCESS! Output size: {out_size_mb:.2f} MB", flush=True)
+    print(f"[+] SUCCÈS ! Vidéo 1080p 60 FPS prête : {out_size_mb:.2f} MB", flush=True)
 
     background_tasks.add_task(cleanup_files, in_file, out_file)
     return FileResponse(
@@ -139,17 +125,13 @@ async def process_direct(
         filename="optimized_" + video.filename
     )
 
-# ----------------- CHUNKED UPLOAD SUPPORT (> 20MB) -----------------
+# ----------------- SUPPORT UPLOADS PAR CHUNKS (> 20MB) -----------------
 @app.post("/api/upload/init")
 async def upload_init(request: Request, auth_token: str = Query(None)):
-    token = auth_token or request.headers.get("Authorization", "")
-    if not is_valid_license(token):
-        raise HTTPException(status_code=401, detail="Licence invalide")
-
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(TEMP_DIR, f"job_{job_id}")
     os.makedirs(job_dir, exist_ok=True)
-    return {"job_id": job_id, "job_otu": token}
+    return {"job_id": job_id, "job_otu": auth_token or "active"}
 
 @app.post("/api/upload/chunk")
 async def upload_chunk(
@@ -180,27 +162,27 @@ async def upload_complete(
     in_file = os.path.join(TEMP_DIR, f"{job_id}_merged.mp4")
     out_file = os.path.join(TEMP_DIR, f"{job_id}_done.mp4")
 
-    # Merge chunks
+    # Fusion des morceaux
     chunks = sorted([os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith("chunk_")])
     with open(in_file, "wb") as outfile:
         for c in chunks:
             with open(c, "rb") as infile:
                 shutil.copyfileobj(infile, outfile)
 
-    # Encode with FFmpeg
+    # Encodage FFmpeg 1080p 60 FPS
     cmd = [
         "ffmpeg", "-y", "-i", in_file,
         "-threads", "2",
-        "-vf", "scale=-2:min(1080\\,ih)",
+        "-vf", "scale='if(gt(iw,ih),-2,min(1080,iw))':'if(gt(iw,ih),min(1080,ih),-2)'",
         "-r", "60",
         "-c:v", "libx264",
         "-profile:v", "high",
         "-level", "4.1",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-b:v", "12M",
-        "-maxrate", "15M",
-        "-bufsize", "20M",
+        "-b:v", "14M",
+        "-maxrate", "18M",
+        "-bufsize", "28M",
         "-preset", "superfast",
         "-c:a", "aac",
         "-b:a", "128k",
@@ -215,47 +197,3 @@ async def upload_complete(
 
     background_tasks.add_task(cleanup_files, in_file, out_file, job_dir)
     return FileResponse(out_file, media_type="video/mp4", filename="optimized.mp4")
-
-# ----------------- TELEGRAM BOT INTEGRATED RUNNER -----------------
-def telegram_bot_worker():
-    """Tourne en tâche de fond pour que le bot Telegram reste actif 24h/24 gratuitement"""
-    offset = 0
-    api_base = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
-    print("[HF-Bot] Bot Telegram initialisé en tâche de fond...", flush=True)
-    while True:
-        try:
-            url = f"{api_base}/getUpdates?offset={offset}&timeout=25"
-            req = urllib.request.Request(url, headers={"User-Agent": "KyostrgrBot/2.0"})
-            with urllib.request.urlopen(req, timeout=35) as resp:
-                data = json.loads(resp.read().decode())
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        msg = update.get("message")
-                        if not msg:
-                            continue
-                        text = msg.get("text", "")
-                        chat_id = msg.get("chat", {}).get("id")
-                        if text.startswith("/start") or text.startswith("/key"):
-                            import string, random
-                            chars = string.ascii_uppercase + string.digits
-                            p1 = "".join(random.choice(chars) for _ in range(4))
-                            p2 = "".join(random.choice(chars) for _ in range(4))
-                            chk = hashlib.sha256((p1 + p2 + SECRET_SALT).encode("utf-8")).hexdigest()[:4].upper()
-                            key = f"KYO-{p1}-{p2}-{chk}"
-                            
-                            reply = (
-                                "⚡ *VOTRE LICENCE KYOSTRGR METHOD*\n"
-                                "━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🔑 *Clé :* `{key}`\n\n"
-                                "🚀 *Activation :* Entrez cette clé dans l'extension Chrome pour débloquer l'encodage 1080p 60 FPS !"
-                            )
-                            send_url = f"{api_base}/sendMessage"
-                            payload = json.dumps({"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"}).encode()
-                            s_req = urllib.request.Request(send_url, data=payload, headers={"Content-Type": "application/json"})
-                            urllib.request.urlopen(s_req, timeout=10)
-        except Exception:
-            import time
-            time.sleep(3)
-
-threading.Thread(target=telegram_bot_worker, daemon=True).start()
