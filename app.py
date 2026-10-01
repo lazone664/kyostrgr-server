@@ -60,7 +60,7 @@ def index():
         "status": "online",
         "service": "Kyostrgr TikTok Optimizer",
         "version": "2.2.4",
-        "engine": "FFmpeg Native Server Edition (Hugging Face 16GB)",
+        "engine": "FFmpeg Native Server Edition (Render 512MB Optimized)",
         "docs": "/docs"
     }
 
@@ -69,7 +69,7 @@ def psver():
     """Compatibility endpoint for extension health checks"""
     return {
         "ps_version": "v22",
-        "server_location": "HuggingFace-France",
+        "server_location": "Render-Frankfurt",
         "online": True
     }
 
@@ -82,7 +82,10 @@ async def process_direct(
     auth_userid: str = Query(None)
 ):
     token = auth_token or request.headers.get("Authorization", "")
+    print(f"[*] Processing request: file={video.filename}, token={token}", flush=True)
+
     if not is_valid_license(token):
+        print(f"[!] Invalid license rejected: {token}", flush=True)
         raise HTTPException(status_code=401, detail="Licence invalide ou expirée. Obtenez votre clé sur @KyostrgrBot")
 
     job_id = str(uuid.uuid4())
@@ -93,30 +96,41 @@ async def process_direct(
     with open(in_file, "wb") as f:
         shutil.copyfileobj(video.file, f)
 
+    file_size_mb = os.path.getsize(in_file) / (1024 * 1024)
+    print(f"[*] Saved uploaded file {in_file} ({file_size_mb:.2f} MB)", flush=True)
+
     # Encode with Kyostrgr TikTok Magic Recipe
+    # Using threads=2 and superfast preset to prevent memory OOM on 512MB Render RAM
     cmd = [
         "ffmpeg", "-y", "-i", in_file,
-        "-vf", "scale='if(gt(iw,ih),-2,min(1080,iw))':'if(gt(iw,ih),min(1080,ih),-2)'",
+        "-threads", "2",
+        "-vf", "scale=-2:min(1080\\,ih)",
         "-r", "60",
         "-c:v", "libx264",
         "-profile:v", "high",
         "-level", "4.1",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-b:v", "14M",
-        "-maxrate", "18M",
-        "-bufsize", "28M",
-        "-preset", "fast",
+        "-b:v", "12M",
+        "-maxrate", "15M",
+        "-bufsize", "20M",
+        "-preset", "superfast",
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "44100",
         out_file
     ]
 
+    print(f"[*] Running FFmpeg: {' '.join(cmd)}", flush=True)
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0 or not os.path.exists(out_file):
+        err_msg = res.stderr.decode('utf-8', errors='ignore')[-500:]
+        print(f"[X] FFmpeg error: {err_msg}", flush=True)
         cleanup_files(in_file, out_file)
-        raise HTTPException(status_code=500, detail="Erreur d'encodage FFmpeg")
+        raise HTTPException(status_code=500, detail=f"Erreur encodage: {err_msg}")
+
+    out_size_mb = os.path.getsize(out_file) / (1024 * 1024)
+    print(f"[+] Encoding SUCCESS! Output size: {out_size_mb:.2f} MB", flush=True)
 
     background_tasks.add_task(cleanup_files, in_file, out_file)
     return FileResponse(
@@ -176,17 +190,18 @@ async def upload_complete(
     # Encode with FFmpeg
     cmd = [
         "ffmpeg", "-y", "-i", in_file,
-        "-vf", "scale='if(gt(iw,ih),-2,min(1080,iw))':'if(gt(iw,ih),min(1080,ih),-2)'",
+        "-threads", "2",
+        "-vf", "scale=-2:min(1080\\,ih)",
         "-r", "60",
         "-c:v", "libx264",
         "-profile:v", "high",
         "-level", "4.1",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
-        "-b:v", "14M",
-        "-maxrate", "18M",
-        "-bufsize", "28M",
-        "-preset", "fast",
+        "-b:v", "12M",
+        "-maxrate", "15M",
+        "-bufsize", "20M",
+        "-preset", "superfast",
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "44100",
@@ -206,7 +221,7 @@ def telegram_bot_worker():
     """Tourne en tâche de fond pour que le bot Telegram reste actif 24h/24 gratuitement"""
     offset = 0
     api_base = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
-    print("[HF-Bot] Bot Telegram initialisé en tâche de fond...")
+    print("[HF-Bot] Bot Telegram initialisé en tâche de fond...", flush=True)
     while True:
         try:
             url = f"{api_base}/getUpdates?offset={offset}&timeout=25"
@@ -222,7 +237,6 @@ def telegram_bot_worker():
                         text = msg.get("text", "")
                         chat_id = msg.get("chat", {}).get("id")
                         if text.startswith("/start") or text.startswith("/key"):
-                            # Generate key
                             import string, random
                             chars = string.ascii_uppercase + string.digits
                             p1 = "".join(random.choice(chars) for _ in range(4))
@@ -244,5 +258,4 @@ def telegram_bot_worker():
             import time
             time.sleep(3)
 
-# Démarre le bot Telegram en thread d'arrière-plan
 threading.Thread(target=telegram_bot_worker, daemon=True).start()
